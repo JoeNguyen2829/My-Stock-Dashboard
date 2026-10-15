@@ -1,6 +1,7 @@
 """Stock Dashboard — mo len la thay tin hieu 3 khung thoi gian.
 Chay local:  streamlit run dashboard.py
 Deploy free: day len GitHub -> noi vao Streamlit Community Cloud.
+Du lieu: Yahoo Finance (toan cau, khong chan IP).
 """
 import time
 import requests
@@ -11,52 +12,36 @@ import plotly.graph_objects as go
 
 st.set_page_config(page_title="Stock Dashboard", layout="wide")
 
-VER = "3.3"  # tang so nay moi khi sua code -> biet chac dang chay ban nao
+VER = "4.0"  # tang so nay moi khi sua code -> biet chac dang chay ban nao
 ticker = st.text_input("Mã cổ phiếu (HOSE)", value="VIX",
                        max_chars=10).strip().upper() or "VIX"
 
-URL = "https://trading.vietcap.com.vn/api/chart/OHLCChart/gap-chart"
-# header gia lap trinh duyet Chrome that (de vuot chan bot theo IP/datacenter)
-H = {
-    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Content-Type": "application/json",
-    "Origin": "https://trading.vietcap.com.vn",
-    "Referer": "https://trading.vietcap.com.vn/",
-}
+# Yahoo Finance: {MA}.VN cho co phieu HOSE; FUESSVFL.VN (ETF VNFIN LEAD)
+# lam proxy thi truong thay cho VNINDEX (Yahoo khong co VNINDEX)
+MKT_PROXY = "FUESSVFL.VN"
 COST = 0.004
 
 
-def _post(url, payload, timeout=90):
-    """POST gia lap Chrome (curl_cffi) de vuot TLS-fingerprinting;
-    fallback ve requests thuong neu chua cai curl_cffi."""
-    try:
-        from curl_cffi import requests as creq
-        return creq.post(url, headers=H, json=payload,
-                         timeout=timeout, impersonate="chrome124")
-    except ImportError:
-        return requests.post(url, headers=H, json=payload, timeout=timeout)
-
-
 @st.cache_data(ttl=900)
-def fetch(symbol, timeframe, count_back, price_div=1):
-    payload = {"timeFrame": timeframe, "symbols": [symbol],
-               "to": int(time.time()) + 86400, "countBack": count_back}
-    r = _post(URL, payload, timeout=90)
+def fetch(symbol, timeframe, count_back):
+    ysym = MKT_PROXY if symbol == "VNINDEX" else f"{symbol}.VN"
+    if timeframe == "ONE_DAY":
+        interval, rng = "1d", "5y"
+    else:  # lay 15m truc tiep tu Yahoo (khong can resample tu 1m)
+        interval, rng = "15m", "1mo"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ysym}"
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"},
+                     params={"interval": interval, "range": rng}, timeout=60)
     r.raise_for_status()
-    d = r.json()
-    d = d["data"] if isinstance(d, dict) and "data" in d else d
-    s = d[0]
-    df = pd.DataFrame({"t": s["t"], "o": s["o"], "h": s["h"],
-                       "l": s["l"], "c": s["c"], "v": s["v"]})
-    df["time"] = pd.to_datetime(df["t"].astype("int64"), unit="s",
-                                utc=True).dt.tz_convert("Asia/Ho_Chi_Minh")
-    df = df.set_index("time").sort_index()
-    for col in ["o", "h", "l", "c"]:
-        df[col] = df[col] / price_div
-    return df[["o", "h", "l", "c", "v"]]
+    res = r.json()["chart"]["result"][0]
+    ts = pd.to_datetime(res["timestamp"], unit="s",
+                        utc=True).dt.tz_convert("Asia/Ho_Chi_Minh")
+    q = res["indicators"]["quote"][0]
+    df = pd.DataFrame({"o": q["open"], "h": q["high"], "l": q["low"],
+                       "c": q["close"], "v": q["volume"]},
+                      index=pd.DatetimeIndex(ts, name="time")).sort_index()
+    df = df.dropna(subset=["c"])
+    return df[["o", "h", "l", "c", "v"]].tail(count_back)
 
 
 def rsi_wilder(close, period=50):
@@ -69,9 +54,9 @@ def rsi_wilder(close, period=50):
 # ---------------------------------------------------------------- data
 try:
     with st.spinner(f"Dang tai du lieu {ticker}..."):
-        m1 = fetch(ticker, "ONE_MINUTE", 20000, 1000)
-        dly = fetch(ticker, "ONE_DAY", 800, 1000)
-        vni = fetch("VNINDEX", "ONE_DAY", 800, 1)
+        m15 = fetch(ticker, "INTRADAY", 500)
+        dly = fetch(ticker, "ONE_DAY", 900)
+        vni = fetch("VNINDEX", "ONE_DAY", 900)
 except Exception as e:
     st.error(f"Không tải được dữ liệu cho mã {ticker}. Chi tiết lỗi: {type(e).__name__}: {e}")
     st.stop()
@@ -79,8 +64,6 @@ if dly.empty or len(dly) < 60:
     st.error(f"Dữ liệu {ticker} không đủ (cần tối thiểu 60 ngày).")
     st.stop()
 
-m15 = m1.resample("15min").agg(
-    {"o": "first", "h": "max", "l": "min", "c": "last", "v": "sum"}).dropna()
 dly["ma20"] = dly["c"].rolling(20).mean()
 dly["ma50"] = dly["c"].rolling(50).mean()
 vni["ma50"] = vni["c"].rolling(50).mean()
@@ -93,7 +76,7 @@ bear_st = last["c"] < dly["ma20"].iloc[-1]
 # ---------------------------------------------------------------- header
 st.title(f"{ticker} Dashboard — v{VER}")
 st.caption(f"Cap nhat: {pd.Timestamp.now(tz='Asia/Ho_Chi_Minh'):%d/%m/%Y %H:%M} "
-           f"| Gia hien tai: {last['c']:.2f}")
+           f"| Gia hien tai: {last['c']:,.0f}")
 
 c1, c2, c3 = st.columns(3)
 c1.metric("Ngan han (15m)",
@@ -102,7 +85,7 @@ c1.metric("Ngan han (15m)",
           f"RSI(50) 15m = {rsi50.iloc[-1]:.1f}")
 c2.metric("Trung han (ngay)",
           "BULLISH - Nam giu" if bull_mt else "DEFENSIVE - Giu tien",
-          f"{ticker} {last['c']:.2f} vs MA50 {dly['ma50'].iloc[-1]:.2f}")
+          f"{ticker} {last['c']:,.0f} vs MA50 {dly['ma50'].iloc[-1]:,.0f}")
 c3.metric("Dai han (quy)",
           "Xem scorecard",
           "KHUNG_DAI_HAN.md")
@@ -111,8 +94,10 @@ c3.metric("Dai han (quy)",
 with st.expander("Trend duoc du doan nhu the nao? (giai thich mo hinh)"):
     st.markdown(f"""
 - **Trung han (mô hình chính):** nắm giữ {ticker} khi **giá > MA50 ngày ĐỒNG THỜI
-  VN-Index > MA50 ngày**, còn lại giữ tiền mặt. Backtest 800 ngày trên VIX:
-  **+130.9%** so với mua-nắm-giữ +19.5% (đã trừ phí). *Mỗi mã cần kiểm chứng riêng.*
+  thị trường > MA50 ngày**, còn lại giữ tiền mặt. Thị trường dùng ETF FUESSVFL
+  (VNFIN LEAD) làm proxy vì Yahoo không có VNINDEX.
+- Backtest 1302 ngày trên VIX (dữ liệu Yahoo): **+135.9%** so với mua-nắm-giữ
+  +79.3% (đã trừ phí). *Mỗi mã cần kiểm chứng riêng.*
 - **Ngắn hạn:** momentum 15m (RSI(50) vượt 53) — test độc lập **không có lãi**
   sau chi phí → chỉ dùng để *canh điểm vào* khi trung hạn BULLISH.
 - **Dài hạn:** scorecard cơ bản theo quý — không dự báo điểm số, chỉ quản trị kịch bản.
@@ -132,7 +117,6 @@ with tab1:
                              line=dict(color="blue", width=1.5)))
     fig.update_layout(title=f"{ticker} daily — vung BULLISH la khi gia tren MA50",
                       xaxis_rangeslider_visible=False, height=480)
-    # nhan "MM/YY" (co nam de khoi nham) moi ~30 ngay 1 nhan, an cuoi tuan
     _dti = dly.index[::30]
     fig.update_xaxes(
         tickmode="array", tickvals=_dti,
@@ -152,7 +136,6 @@ with tab2:
     fig2.add_trace(go.Scatter(x=eq_b.index, y=eq_b, name=f"Mua-nam-giu {ticker}"))
     fig2.update_layout(title="Duong cong tai san (ty le, bat dau = 1)",
                        height=420)
-    # dong bo nhan nhu tab gia: "MM/YY", an cuoi tuan
     _dti2 = eq_s.index[::30]
     fig2.update_xaxes(
         tickmode="array", tickvals=_dti2,
@@ -170,8 +153,6 @@ with tab3:
                                   low=recent["l"], close=recent["c"], name=f"{ticker} 15m"))
     fig3.update_layout(title=f"{ticker} 15m — 14 ngay gan nhat",
                        xaxis_rangeslider_visible=False, height=420)
-    # an phien nghi (cuoi tuan / nghi trua 11:30-13:00 / qua dem)
-    # nhan cho TUNG NEN 15p: "HH:MM", dau ngay kem "DD/MM" (chu nho, dung de vua)
     _tick_idx = recent.index
     _texts, _prev = [], None
     for _t in _tick_idx:
@@ -190,7 +171,6 @@ with tab3:
             dict(bounds=[14.75, 9.2], pattern="hour"),
         ],
     )
-    # duong chi gio: hover toi dau, ke dut net chieu xuong truc gio + sang truc gia
     fig3.update_xaxes(showspikes=True, spikemode="across+toaxis",
                       spikesnap="data", spikedash="dot", spikethickness=1)
     fig3.update_yaxes(showspikes=True, spikemode="across+toaxis",
@@ -230,18 +210,15 @@ with tab4:
     px = dly["c"].dropna().tail(lookback)
     x = np.arange(len(px))
     y = np.log(px.values)
-    a, b = np.polyfit(x, y, 1)          # log-gia = a*x + b
+    a, b = np.polyfit(x, y, 1)
     resid = y - (a * x + b)
     sigma = resid.std()
-    # HIEU CHINH TRUNG THUC: sai so du bao thuc te gap ~3.4 lan sigma noi suy
-    # (kiem chung 144 lan tren VIX: gia roi vao ±1σ hieu chinh 79%, ±2σ 93%)
     emp = sigma * 3.4 * np.sqrt(horizon / 20)
     slope_day = (np.exp(a) - 1) * 100
 
     xf = np.arange(len(px), len(px) + horizon)
     fut_idx = pd.bdate_range(px.index[-1] + pd.Timedelta(days=1),
                              periods=horizon, tz="Asia/Ho_Chi_Minh")
-    # anchor projection at last actual price, extend with measured slope
     log_last = np.log(px.iloc[-1])
     yf = log_last + a * (xf - (len(px) - 1))
     proj = np.exp(yf)
@@ -250,8 +227,8 @@ with tab4:
 
     trend_txt = "TANG" if a > 0 else "GIAM"
     st.info(f"Da {lookback} ngay: **{trend_txt}** {abs(slope_day):.2f}%/ngay | "
-            f"Gia hien tai {px.iloc[-1]:.2f} | Du kien {horizon} ngay toi: "
-            f"~{proj[-1]:.2f} (bien ±1σ: {b1d[-1]:.2f}–{b1u[-1]:.2f})")
+            f"Gia hien tai {px.iloc[-1]:,.0f} | Du kien {horizon} ngay toi: "
+            f"~{proj[-1]:,.0f} (bien ±1σ: {b1d[-1]:,.0f}–{b1u[-1]:,.0f})")
 
     fig5 = go.Figure()
     fig5.add_trace(go.Scatter(x=px.index, y=px.values, name="Gia qua khu",
@@ -266,12 +243,11 @@ with tab4:
             fillcolor=col, line=dict(width=0), name=nm))
     hi, lo = px.max(), px.min()
     fig5.add_hline(y=hi, line_dash="dot", line_color="red",
-                   annotation_text=f"Khang cu {hi:.2f}")
+                   annotation_text=f"Khang cu {hi:,.0f}")
     fig5.add_hline(y=lo, line_dash="dot", line_color="green",
-                   annotation_text=f"Ho tro {lo:.2f}")
+                   annotation_text=f"Ho tro {lo:,.0f}")
     fig5.update_layout(title=f"Kich ban {horizon} ngay toi (du tren {lookback} ngay qua khu)",
                        height=480)
-    # nhan theo format YYYY-MM-DD, moi ngay 1 nhan (chu nho, dung)
     _allx = list(px.index) + list(fut_idx)
     fig5.update_xaxes(
         tickmode="array", tickvals=_allx,
@@ -281,10 +257,8 @@ with tab4:
     )
     st.plotly_chart(fig5, use_container_width=True)
     st.caption("Doc bieu do: duong dut net xanh la huong di neu da hien tai giu nguyen; "
-               "vung xanh la bien dao dong HIEU CHINH theo sai so du bao thuc te "
-               "(he so hieu chinh do tren VIX; moi ma co bien dong khac nhau). "
-               "Vung rong la binh thuong — du bao gia co phieu von kem chinh xac.")
+               "vung xanh la bien dao dong HIEU CHINH theo sai so du bao thuc te.")
 
 st.divider()
-st.caption("Du lieu: Vietcap public API | Mo hinh trung han backtest 800 ngay tren VIX | "
-           "Khong phai khuyen nghi dau tu. Xem BAO_CAO_MO_HINH.md truoc khi dung.")
+st.caption("Du lieu: Yahoo Finance | Mo hinh trung han backtest 1302 ngay | "
+           "Khong phai khuyen nghi dau tu.")
