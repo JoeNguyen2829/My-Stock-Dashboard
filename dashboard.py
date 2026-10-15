@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 
 st.set_page_config(page_title="Stock Dashboard", layout="wide")
 
-VER = "3.1"  # tang so nay moi khi sua code -> biet chac dang chay ban nao
+VER = "3.2"  # tang so nay moi khi sua code -> biet chac dang chay ban nao
 ticker = st.text_input("Mã cổ phiếu (HOSE)", value="VIX",
                        max_chars=10).strip().upper() or "VIX"
 
@@ -52,8 +52,8 @@ try:
         m1 = fetch(ticker, "ONE_MINUTE", 20000, 1000)
         dly = fetch(ticker, "ONE_DAY", 800, 1000)
         vni = fetch("VNINDEX", "ONE_DAY", 800, 1)
-except Exception:
-    st.error(f"Không tải được dữ liệu cho mã {ticker}. Kiểm tra lại mã CK.")
+except Exception as e:
+    st.error(f"Không tải được dữ liệu cho mã {ticker}. Chi tiết lỗi: {type(e).__name__}: {e}")
     st.stop()
 if dly.empty or len(dly) < 60:
     st.error(f"Dữ liệu {ticker} không đủ (cần tối thiểu 60 ngày).")
