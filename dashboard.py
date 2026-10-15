@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 
 st.set_page_config(page_title="Stock Dashboard", layout="wide")
 
-VER = "4.0"  # tang so nay moi khi sua code -> biet chac dang chay ban nao
+VER = "4.1"  # tang so nay moi khi sua code -> biet chac dang chay ban nao
 ticker = st.text_input("Mã cổ phiếu (HOSE)", value="VIX",
                        max_chars=10).strip().upper() or "VIX"
 
@@ -35,7 +35,7 @@ def fetch(symbol, timeframe, count_back):
     r.raise_for_status()
     res = r.json()["chart"]["result"][0]
     ts = pd.to_datetime(res["timestamp"], unit="s",
-                        utc=True).dt.tz_convert("Asia/Ho_Chi_Minh")
+                        utc=True).tz_convert("Asia/Ho_Chi_Minh")
     q = res["indicators"]["quote"][0]
     df = pd.DataFrame({"o": q["open"], "h": q["high"], "l": q["low"],
                        "c": q["close"], "v": q["volume"]},
