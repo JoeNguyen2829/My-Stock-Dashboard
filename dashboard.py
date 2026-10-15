@@ -11,20 +11,40 @@ import plotly.graph_objects as go
 
 st.set_page_config(page_title="Stock Dashboard", layout="wide")
 
-VER = "3.2"  # tang so nay moi khi sua code -> biet chac dang chay ban nao
+VER = "3.3"  # tang so nay moi khi sua code -> biet chac dang chay ban nao
 ticker = st.text_input("Mã cổ phiếu (HOSE)", value="VIX",
                        max_chars=10).strip().upper() or "VIX"
 
 URL = "https://trading.vietcap.com.vn/api/chart/OHLCChart/gap-chart"
-H = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
+# header gia lap trinh duyet Chrome that (de vuot chan bot theo IP/datacenter)
+H = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Content-Type": "application/json",
+    "Origin": "https://trading.vietcap.com.vn",
+    "Referer": "https://trading.vietcap.com.vn/",
+}
 COST = 0.004
+
+
+def _post(url, payload, timeout=90):
+    """POST gia lap Chrome (curl_cffi) de vuot TLS-fingerprinting;
+    fallback ve requests thuong neu chua cai curl_cffi."""
+    try:
+        from curl_cffi import requests as creq
+        return creq.post(url, headers=H, json=payload,
+                         timeout=timeout, impersonate="chrome124")
+    except ImportError:
+        return requests.post(url, headers=H, json=payload, timeout=timeout)
 
 
 @st.cache_data(ttl=900)
 def fetch(symbol, timeframe, count_back, price_div=1):
     payload = {"timeFrame": timeframe, "symbols": [symbol],
                "to": int(time.time()) + 86400, "countBack": count_back}
-    r = requests.post(URL, headers=H, json=payload, timeout=90)
+    r = _post(URL, payload, timeout=90)
     r.raise_for_status()
     d = r.json()
     d = d["data"] if isinstance(d, dict) and "data" in d else d
